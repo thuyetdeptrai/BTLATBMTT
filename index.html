@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Audio Messenger (DES)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; }
+        .status-disconnected { background-color: #f87171; }
+        .status-connecting { background-color: #facc15; }
+        .status-connected { background-color: #4ade80; }
+        #record-btn.recording .record-dot { animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="bg-gray-900 text-white flex items-center justify-center min-h-screen">
+
+    <div class="w-full max-w-4xl mx-auto p-4 md:p-8">
+        <div class="bg-gray-800 rounded-2xl shadow-2xl p-6 md:p-8">
+            <h1 class="text-3xl md:text-4xl font-bold text-center mb-2 text-cyan-400">Secure Audio Messenger</h1>
+            <p class="text-center text-gray-400 mb-6">Gửi tin nhắn âm thanh mã hóa DES qua kết nối P2P</p>
+
+            <!-- Vùng Kết nối & Trạng thái -->
+            <div id="connection-area" class="grid md:grid-cols-2 gap-6 mb-6">
+                <div class="bg-gray-700/50 p-6 rounded-xl">
+                    <h2 class="text-xl font-semibold mb-4">Kết nối</h2>
+                    <div class="space-y-4">
+                        <input type="text" id="my-id" class="w-full bg-gray-900 rounded-md border-gray-700 text-white px-3 py-2" placeholder="ID của bạn (e.g., user1)">
+                        <input type="text" id="peer-id" class="w-full bg-gray-900 rounded-md border-gray-700 text-white px-3 py-2" placeholder="ID người nhận (e.g., user2)">
+                        <button id="connect-btn" class="w-full bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded-lg">Thiết lập Kênh Bảo mật</button>
+                    </div>
+                </div>
+                <div class="bg-gray-700/50 p-6 rounded-xl">
+                    <h2 class="text-xl font-semibold mb-4">Trạng thái</h2>
+                    <ul id="status-list" class="space-y-3 text-gray-300">
+                        <li class="flex items-center"><span id="ws-status-dot" class="status-dot status-disconnected mr-3"></span><span id="ws-status-text">Chưa kết nối Server</span></li>
+                        <li class="flex items-center"><span id="keys-status-dot" class="status-dot status-disconnected mr-3"></span><span id="keys-status-text">Chưa trao đổi khóa</span></li>
+                        <li class="flex items-center"><span id="webrtc-status-dot" class="status-dot status-disconnected mr-3"></span><span id="webrtc-status-text">Chưa có kênh P2P</span></li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Vùng Chat -->
+            <div id="chat-area" class="hidden">
+                <div class="grid md:grid-cols-2 gap-6">
+                    <!-- Gửi tin nhắn -->
+                    <div class="bg-gray-700/50 p-6 rounded-xl">
+                        <h2 class="text-xl font-semibold mb-4">Gửi Tin nhắn thoại</h2>
+                        <div class="flex flex-col items-center justify-center space-y-4">
+                            <button id="record-btn" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center transition-colors">
+                                <span class="record-dot status-dot bg-white mr-2"></span>
+                                <span id="record-btn-text">Bắt đầu Ghi âm</span>
+                            </button>
+                            <p id="record-timer" class="text-gray-400 text-sm">Thời gian: 00:00</p>
+                        </div>
+                    </div>
+                    <!-- Tin nhắn đã nhận -->
+                    <div class="bg-gray-700/50 p-6 rounded-xl">
+                        <h2 class="text-xl font-semibold mb-4">Hộp thư đến</h2>
+                        <div id="message-list" class="space-y-3 h-48 overflow-y-auto">
+                           <p class="text-gray-500 text-center mt-4">Chưa có tin nhắn nào...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Log Hệ thống -->
+            <div class="mt-6 bg-gray-900/70 p-4 rounded-xl">
+                <h3 class="text-lg font-semibold mb-2 text-gray-400">Log Hệ thống</h3>
+                <div id="log" class="h-32 bg-black rounded-md p-3 overflow-y-auto text-sm font-mono text-gray-400"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- DOM Elements ---
+        const myIdInput = document.getElementById('my-id');
+        const peerIdInput = document.getElementById('peer-id');
+        const connectBtn = document.getElementById('connect-btn');
+        const recordBtn = document.getElementById('record-btn');
+        const recordBtnText = document.getElementById('record-btn-text');
+        const recordTimer = document.getElementById('record-timer');
+        const messageList = document.getElementById('message-list');
+        const logDiv = document.getElementById('log');
+        const connectionArea = document.getElementById('connection-area');
+        const chatArea = document.getElementById('chat-area');
+
+        // --- Status Indicators ---
+        const wsStatusDot = document.getElementById('ws-status-dot');
+        const wsStatusText = document.getElementById('ws-status-text');
+        const keysStatusDot = document.getElementById('keys-status-dot');
+        const keysStatusText = document.getElementById('keys-status-text');
+        const webrtcStatusDot = document.getElementById('webrtc-status-dot');
+        const webrtcStatusText = document.getElementById('webrtc-status-text');
+
+        // --- Global State ---
+        let ws;
+        let myId, peerId;
+        let rsaKeyPair, peerRsaPublicKey, desKey;
+        let peerConnection, dataChannel;
+        let mediaRecorder, audioChunks = [], isRecording = false;
+        let timerInterval;
+
+        // --- Helper Functions ---
+        const log = (message, isError = false) => {
+            console[isError ? 'error' : 'log'](message);
+            const p = document.createElement('p');
+            p.innerHTML = `> ${message}`;
+            if (isError) p.style.color = '#f87171';
+            logDiv.appendChild(p);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        };
+        const updateStatus = (dot, text, status, message) => {
+            dot.className = `status-dot status-${status} mr-3`;
+            text.textContent = message;
+        };
+        const arrayBufferToWordArray = (ab) => CryptoJS.lib.WordArray.create(new Uint8Array(ab));
+        const wordArrayToUint8Array = (wordArray) => {
+            const l = wordArray.sigBytes;
+            const words = wordArray.words;
+            const a = new Uint8Array(l);
+            for (let i = 0; i < l; i++) {
+                a[i] = (words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
+            }
+            return a;
+        };
+
+        // --- Crypto Module ---
+        const cryptoModule = {
+            async generateRsaKeys() { return window.crypto.subtle.generateKey({ name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["encrypt", "decrypt"]); },
+            async exportKey(key) { return JSON.stringify(await window.crypto.subtle.exportKey("jwk", key)); },
+            async importRsaPublicKey(jwkString) { return window.crypto.subtle.importKey("jwk", JSON.parse(jwkString), { name: "RSA-OAEP", hash: "SHA-256" }, true, ["encrypt"]); },
+            async encryptRsa(data, publicKey) { return window.crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, new TextEncoder().encode(data)); },
+            async decryptRsa(data, privateKey) { return new TextDecoder().decode(await window.crypto.subtle.decrypt({ name: "RSA-OAEP" }, privateKey, data)); },
+            generateDesKey() { return CryptoJS.lib.WordArray.random(8); },
+            encryptDes(data, key) {
+                const iv = CryptoJS.lib.WordArray.random(8);
+                const encrypted = CryptoJS.DES.encrypt(arrayBufferToWordArray(data), key, { iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
+                return CryptoJS.enc.Base64.stringify(iv.clone().concat(encrypted.ciphertext));
+            },
+            decryptDes(base64Data, key) {
+                const ivAndCiphertext = CryptoJS.enc.Base64.parse(base64Data);
+                const iv = CryptoJS.lib.WordArray.create(ivAndCiphertext.words.slice(0, 2));
+                const ciphertext = CryptoJS.lib.WordArray.create(ivAndCiphertext.words.slice(2));
+                const decrypted = CryptoJS.DES.decrypt({ ciphertext }, key, { iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
+                return wordArrayToUint8Array(decrypted).buffer;
+            }
+        };
+
+        // --- WebSocket & WebRTC Handlers ---
+        const setupPeerConnection = () => {
+            peerConnection = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+            peerConnection.onicecandidate = e => e.candidate && ws.send(JSON.stringify({ type: 'candidate', to: peerId, candidate: e.candidate }));
+            peerConnection.ondatachannel = e => { dataChannel = e.channel; setupDataChannel(); };
+            peerConnection.onconnectionstatechange = () => {
+                log(`Trạng thái P2P: ${peerConnection.connectionState}`);
+                if (peerConnection.connectionState === 'connected') {
+                    updateStatus(webrtcStatusDot, webrtcStatusText, 'connected', 'Kênh P2P đã sẵn sàng');
+                    connectionArea.classList.add('hidden');
+                    chatArea.classList.remove('hidden');
+                } else if (['disconnected', 'failed', 'closed'].includes(peerConnection.connectionState)) {
+                    updateStatus(webrtcStatusDot, webrtcStatusText, 'disconnected', 'Mất kết nối P2P');
+                }
+            };
+        };
+
+        const setupDataChannel = () => {
+            dataChannel.onopen = () => log("Data channel đã mở.");
+            dataChannel.onclose = () => log("Data channel đã đóng.");
+            dataChannel.onmessage = e => handleReceivedMessage(e.data);
+        };
+
+        const handleReceivedMessage = (encryptedData) => {
+            try {
+                log("Đã nhận tin nhắn, đang giải mã...");
+                const decryptedAudioBuffer = cryptoModule.decryptDes(encryptedData, desKey);
+                const audioBlob = new Blob([decryptedAudioBuffer], { type: 'audio/webm' });
+                const audioUrl = URL.createObjectURL(audioBlob);
+
+                if (messageList.querySelector('p')) {
+                    messageList.innerHTML = ''; // Xóa thông báo "Chưa có tin nhắn"
+                }
+                const messageElement = document.createElement('div');
+                messageElement.className = 'bg-gray-800 p-3 rounded-lg flex items-center justify-between';
+                messageElement.innerHTML = `
+                    <span class="text-gray-300">Tin nhắn thoại từ ${peerId}</span>
+                    <audio controls src="${audioUrl}" class="h-8"></audio>
+                `;
+                messageList.prepend(messageElement);
+                log("Giải mã thành công. Tin nhắn mới đã được thêm vào hộp thư.");
+            } catch (err) {
+                log(`Lỗi giải mã tin nhắn: ${err.message}`, true);
+            }
+        };
+
+        const connect = async () => {
+            myId = myIdInput.value;
+            peerId = peerIdInput.value;
+            if (!myId || !peerId) return log("Vui lòng nhập ID của bạn và người nhận.", true);
+
+            connectBtn.disabled = true;
+            connectBtn.textContent = "Đang kết nối...";
+
+            ws = new WebSocket('ws://127.0.0.1:8765');
+
+            ws.onopen = async () => {
+                updateStatus(wsStatusDot, wsStatusText, 'connected', `Đã kết nối Server với ID: ${myId}`);
+                ws.send(JSON.stringify({ type: 'register', id: myId }));
+                rsaKeyPair = await cryptoModule.generateRsaKeys();
+                setupPeerConnection();
+                // Người gọi (khởi tạo) sẽ tạo offer
+                dataChannel = peerConnection.createDataChannel("messenger");
+                setupDataChannel();
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                ws.send(JSON.stringify({ type: 'offer', to: peerId, offer }));
+                log("Đã gửi offer để thiết lập kênh P2P.");
+            };
+
+            ws.onmessage = async (event) => {
+                const msg = JSON.parse(event.data);
+                log(`[NHẬN] Tin nhắn: ${msg.type}`);
+                switch (msg.type) {
+                    case 'offer':
+                        setupPeerConnection();
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.offer));
+                        const myPublicKey = await cryptoModule.exportKey(rsaKeyPair.publicKey);
+                        const answer = await peerConnection.createAnswer();
+                        await peerConnection.setLocalDescription(answer);
+                        ws.send(JSON.stringify({ type: 'answer', to: msg.from, answer, key: myPublicKey }));
+                        log("Đã nhận offer, gửi lại answer và khóa công khai.");
+                        break;
+                    case 'answer':
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.answer));
+                        peerRsaPublicKey = await cryptoModule.importRsaPublicKey(msg.key);
+                        desKey = cryptoModule.generateDesKey();
+                        const encryptedDesKey = await cryptoModule.encryptRsa(CryptoJS.enc.Hex.stringify(desKey), peerRsaPublicKey);
+                        ws.send(JSON.stringify({ type: 'des_key', to: msg.from, key: btoa(String.fromCharCode(...new Uint8Array(encryptedDesKey))) }));
+                        updateStatus(keysStatusDot, keysStatusText, 'connected', 'Đã trao đổi khóa & tạo khóa DES');
+                        log("Đã nhận answer, gửi đi khóa DES đã mã hóa.");
+                        break;
+                    case 'des_key':
+                        const encryptedKey = new Uint8Array(atob(msg.key).split("").map(c => c.charCodeAt(0))).buffer;
+                        const decryptedKey = await cryptoModule.decryptRsa(encryptedKey, rsaKeyPair.privateKey);
+                        desKey = CryptoJS.enc.Hex.parse(decryptedKey);
+                        updateStatus(keysStatusDot, keysStatusText, 'connected', 'Đã nhận và giải mã khóa DES');
+                        log("Đã nhận và giải mã khóa DES thành công.");
+                        break;
+                    case 'candidate':
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(msg.candidate));
+                        break;
+                }
+            };
+            ws.onerror = () => log("Lỗi kết nối WebSocket.", true);
+        };
+
+        // --- Audio Recording Logic ---
+        const startRecording = async () => {
+            if (isRecording) return;
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                isRecording = true;
+                audioChunks = [];
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                mediaRecorder.onstop = sendRecording;
+                mediaRecorder.start();
+
+                recordBtn.classList.add('recording');
+                recordBtnText.textContent = "Dừng & Gửi";
+                let seconds = 0;
+                timerInterval = setInterval(() => {
+                    seconds++;
+                    const min = String(Math.floor(seconds / 60)).padStart(2, '0');
+                    const sec = String(seconds % 60).padStart(2, '0');
+                    recordTimer.textContent = `Thời gian: ${min}:${sec}`;
+                }, 1000);
+                log("Bắt đầu ghi âm...");
+            } catch (err) {
+                log("Không thể truy cập micro. Vui lòng cấp quyền.", true);
+            }
+        };
+
+        const stopRecording = () => {
+            if (!isRecording) return;
+            mediaRecorder.stop();
+            isRecording = false;
+            recordBtn.classList.remove('recording');
+            recordBtnText.textContent = "Bắt đầu Ghi âm";
+            clearInterval(timerInterval);
+            recordTimer.textContent = "Thời gian: 00:00";
+            log("Đã dừng ghi âm.");
+        };
+        
+        const sendRecording = () => {
+            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+            audioBlob.arrayBuffer().then(buffer => {
+                log("Đang mã hóa và gửi tin nhắn...");
+                const encryptedData = cryptoModule.encryptDes(buffer, desKey);
+                dataChannel.send(encryptedData);
+                log("Đã gửi tin nhắn thành công!");
+            });
+        };
+
+        // --- Event Listeners ---
+        connectBtn.addEventListener('click', connect);
+        recordBtn.addEventListener('click', () => isRecording ? stopRecording() : startRecording());
+
+    </script>
+</body>
+</html>
